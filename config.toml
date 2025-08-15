@@ -1,6 +1,0 @@
-[theme]
-primaryColor = "#FF6DAF"             # Candy pink for buttons and accents
-backgroundColor = "#FDE4EC"          # Soft pastel pink background (more visible than white)
-secondaryBackgroundColor = "#FFF5F9" # Lighter pink for containers/cards
-textColor = "#1F2937"                 # Dark neutral gray text
-font = "sans seriff"
