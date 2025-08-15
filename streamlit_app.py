@@ -25,12 +25,10 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# My Melody-inspired palette
-COLOR_SUCCESS = "#E60073"   # deep pink (success)
-COLOR_CHANGED = "#FF9EC4"   # medium pink (changed)
-COLOR_FAILURE = "#5B3A29"   # dark brown (failure)
-COLOR_BG_SOFT = "#FFFFFF"   # white background for contrast
-COLOR_TEXT = "#111827"      # near-black text
+# Accessible palette aligned with My Melody-inspired theme
+COLOR_SUCCESS = "#FF6DAF"   # candy pink for successes
+COLOR_CHANGED = "#FF9EC4"   # medium pink for content changes
+COLOR_FAILURE = "#5B3A29"   # dark brown for failures
 
 # Shared HTTP session
 session = requests.Session()
@@ -247,7 +245,7 @@ def chart_success_failure(df: pd.DataFrame, title: str):
     # Aggregate per day and event
     agg = df.groupby(["day", "event"]).size().reset_index(name="count")
     # Keep only relevant events
-    agg = agg[agg["event"].isin(["success", "failure", "changed"])]
+    agg = agg[agg["event"].isin(["success", "changed", "failure"])]
     # Map colors
     color_scale = alt.Scale(
         domain=["success", "changed", "failure"],
@@ -272,29 +270,6 @@ def chart_success_failure(df: pd.DataFrame, title: str):
 # -----------------------------
 
 st.set_page_config(page_title="Stock Monitor", layout="wide")
-
-# Minimal theming via CSS injection
-st.markdown(
-    f"""
-    <style>
-    :root {{
-        --mm-success: {COLOR_SUCCESS};
-        --mm-changed: {COLOR_CHANGED};
-        --mm-failure: {COLOR_FAILURE};
-        --mm-bg: {COLOR_BG_SOFT};
-        --mm-text: {COLOR_TEXT};
-    }}
-    .stApp {{ background: var(--mm-bg); color: var(--mm-text); }}
-    .stButton>button {{
-        background: var(--mm-success) !important; color: white !important;
-        border: 0; border-radius: 6px;
-    }}
-    .stButton>button:hover {{ filter: brightness(0.95); }}
-    .st-emotion-cache-1wmy9hl, .st-emotion-cache-16idsys {{ color: var(--mm-text) !important; }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 st.title("Website Stock Monitor")
 st.caption("Tracks stock-related changes and counts successful and failed checks per URL.")
@@ -412,7 +387,7 @@ st.write("Notes: State is stored in /tmp and resets on redeploys. Email settings
 
 
 # -----------------
-# requirements.txt
+# requirements.txt (repo file)
 # -----------------
 # streamlit==1.37.0
 # requests>=2.31.0
