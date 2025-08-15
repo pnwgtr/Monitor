@@ -1,0 +1,6 @@
+[theme]
+primaryColor = "#E60073"             # deep pink accents
+backgroundColor = "#FFFFFF"          # white background for readability
+secondaryBackgroundColor = "#FFF5F9" # very light pink panels
+textColor = "#111827"                # near-black text
+font = "sans serif"
