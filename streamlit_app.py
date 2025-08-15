@@ -1,4 +1,3 @@
-# streamlit_app.py
 # Streamlit Cloud app to monitor product pages for stock changes
 # Tracks successful and failed check attempts per URL and visualizes them.
 
@@ -25,12 +24,12 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Accessible palette aligned with My Melody-inspired theme
-COLOR_SUCCESS = "#FF6DAF"   # candy pink for successes
-COLOR_CHANGED = "#FF9EC4"   # medium pink for content changes
-COLOR_FAILURE = "#5B3A29"   # dark brown for failures
+# Accessible palette aligned with a My Melody inspired theme
+COLOR_SUCCESS = "#FF6DAF"  # candy pink for successes
+COLOR_CHANGED = "#FF9EC4"  # medium pink for content changes
+COLOR_FAILURE = "#3E2723"  # very dark brown for failures (higher contrast)
 
-# Shared HTTP session
+# Shared HTTP session with realistic headers
 session = requests.Session()
 session.headers.update({
     "User-Agent": USER_AGENT,
@@ -46,7 +45,6 @@ session.headers.update({
 # -----------------------------
 # Helpers and persistence
 # -----------------------------
-
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -67,7 +65,6 @@ def save_state(state: Dict[str, Any]) -> None:
 # -----------------------------
 # Stock parsing and classification
 # -----------------------------
-
 def extract_stock_info(html: str) -> Dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
     stock: Dict[str, Any] = {}
@@ -78,7 +75,9 @@ def extract_stock_info(html: str) -> Dict[str, Any]:
 
     add_btn = soup.find(
         "button",
-        string=lambda s: s and any(k in s.lower() for k in ["add to cart", "add to bag", "buy now", "purchase"]),
+        string=lambda s: s and any(
+            k in s.lower() for k in ["add to cart", "add to bag", "buy now", "purchase"]
+        ),
     )
     if add_btn:
         stock["add_to_cart"] = True
@@ -88,7 +87,9 @@ def extract_stock_info(html: str) -> Dict[str, Any]:
 
     prod_info = soup.find("div", {"class": lambda c: c and "product" in c.lower()})
     if prod_info:
-        stock["product_section"] = " ".join(prod_info.get_text(separator=" ").lower().split())
+        stock["product_section"] = " ".join(
+            prod_info.get_text(separator=" ").lower().split()
+        )
 
     return stock
 
@@ -123,7 +124,6 @@ def content_hash(obj: Dict[str, Any]) -> str:
 # -----------------------------
 # Fetching and email
 # -----------------------------
-
 def fetch(url: str, timeout: int = 20) -> str:
     # Light retry for 403/429
     for attempt in range(3):
@@ -138,6 +138,13 @@ def fetch(url: str, timeout: int = 20) -> str:
 
 
 def get_email_cfg() -> Dict[str, Any]:
+    # Optional secrets, configured in Streamlit Cloud:
+    # [email]
+    # enabled = true
+    # sender = "you@example.com"
+    # password = "app_password"
+    # smtp_server = "smtp.gmail.com"
+    # smtp_port = 587
     return dict(st.secrets.get("email", {}))
 
 
@@ -165,9 +172,11 @@ def send_email(subject: str, body: str, recipients: List[str]):
 # -----------------------------
 # Core check routine with success/failure tracking
 # -----------------------------
-
 def perform_check(url: str, t: Dict[str, Any]) -> Tuple[Dict[str, Any], str, bool]:
-    """Return (updated_target_dict, status, changed_flag). Also updates success/fail counters and logs."""
+    """
+    Return (updated_target_dict, status, changed_flag).
+    Also updates success/fail counters and logs.
+    """
     t.setdefault("success_count", 0)
     t.setdefault("fail_count", 0)
     t.setdefault("last_error", "")
@@ -218,7 +227,6 @@ def perform_check(url: str, t: Dict[str, Any]) -> Tuple[Dict[str, Any], str, boo
 # -----------------------------
 # Visualization helpers
 # -----------------------------
-
 def logs_to_frame(url: str, t: Dict[str, Any]) -> pd.DataFrame:
     """Convert per-target log list to a tidy DataFrame."""
     rows = []
@@ -239,14 +247,14 @@ def logs_to_frame(url: str, t: Dict[str, Any]) -> pd.DataFrame:
 
 
 def chart_success_failure(df: pd.DataFrame, title: str):
+    """High contrast chart for events per day."""
     if df.empty:
         st.info("No log data yet to chart.")
         return
     # Aggregate per day and event
     agg = df.groupby(["day", "event"]).size().reset_index(name="count")
-    # Keep only relevant events
     agg = agg[agg["event"].isin(["success", "changed", "failure"])]
-    # Map colors
+    # High-contrast colors to avoid blending with the background
     color_scale = alt.Scale(
         domain=["success", "changed", "failure"],
         range=[COLOR_SUCCESS, COLOR_CHANGED, COLOR_FAILURE],
@@ -268,7 +276,6 @@ def chart_success_failure(df: pd.DataFrame, title: str):
 # -----------------------------
 # UI
 # -----------------------------
-
 st.set_page_config(page_title="Stock Monitor", layout="wide")
 
 st.title("Website Stock Monitor")
@@ -350,7 +357,7 @@ if col1.button("Check selected") and sel:
     state["targets"][sel] = t
     save_state(state)
     if new_status == "ERROR":
-        st.error(f"Check failed: {t.get('last_error','')}" )
+        st.error(f"Check failed: {t.get('last_error','')}")
     else:
         st.success(f"Checked. Status: {new_status}{' (changed)' if changed else ''}.")
         if changed:
@@ -383,14 +390,5 @@ for u, t in state["targets"].items():
             st.dataframe(df.sort_values("at", ascending=False), use_container_width=True)
 
 st.divider()
-st.write("Notes: State is stored in /tmp and resets on redeploys. Email settings come from Streamlit Secrets. JavaScript-rendered sites or strict bot defenses may limit results.")
-
-
-# -----------------
-# requirements.txt (repo file)
-# -----------------
-# streamlit==1.37.0
-# requests>=2.31.0
-# beautifulsoup4>=4.12.2
-# pandas>=2.0.0
-# altair>=5.0.0
+st.write("Notes: State is stored in /tmp and resets on redeploys. Email settings come from Streamlit Secrets. "
+         "JavaScript-rendered sites or strict bot defenses may limit results.")
