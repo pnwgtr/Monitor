@@ -1,12 +1,12 @@
 # streamlit_app.py
-# Cloud-friendly Streamlit app to monitor product pages for stock changes
-# Uses /tmp for ephemeral state. Configure SMTP in Streamlit Cloud Secrets.
+# Streamlit Cloud app to monitor product pages for stock changes
+# Tracks successful and failed check attempts per URL.
 
 import json
 import time
 import hashlib
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 import requests
 from bs4 import BeautifulSoup
@@ -22,7 +22,7 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-# Session for HTTP
+# Shared HTTP session
 session = requests.Session()
 session.headers.update({
     "User-Agent": USER_AGENT,
@@ -34,6 +34,10 @@ session.headers.update({
     "DNT": "1",
 })
 
+
+# -----------------------------
+# Helpers and persistence
+# -----------------------------
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -52,13 +56,14 @@ def save_state(state: Dict[str, Any]) -> None:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-# Core extraction
+# -----------------------------
+# Stock parsing and classification
+# -----------------------------
 
 def extract_stock_info(html: str) -> Dict[str, Any]:
     soup = BeautifulSoup(html, "html.parser")
     stock: Dict[str, Any] = {}
 
-    # Buttons
     notify_button = soup.find("button", string=lambda s: s and "notify me" in s.lower())
     if notify_button:
         stock["notify_button"] = True
@@ -70,7 +75,6 @@ def extract_stock_info(html: str) -> Dict[str, Any]:
     if add_btn:
         stock["add_to_cart"] = True
 
-    # Text indicators
     text = soup.get_text(separator=" ").lower()
     stock["full_text"] = " ".join(text.split())
 
@@ -108,9 +112,12 @@ def content_hash(obj: Dict[str, Any]) -> str:
     return hashlib.md5(blob.encode("utf-8")).hexdigest()
 
 
-# Fetch with light retry for 403/429
+# -----------------------------
+# Fetching and email
+# -----------------------------
 
 def fetch(url: str, timeout: int = 20) -> str:
+    # Light retry for 403/429
     for attempt in range(3):
         r = session.get(url, timeout=timeout)
         if r.status_code in (403, 429):
@@ -118,21 +125,11 @@ def fetch(url: str, timeout: int = 20) -> str:
             continue
         r.raise_for_status()
         return r.text
-    # Last try raises if still blocked
     r.raise_for_status()
     return r.text
 
 
-# Email via Streamlit secrets
-
 def get_email_cfg() -> Dict[str, Any]:
-    # Expect secrets like:
-    # [email]
-    # enabled = true
-    # sender = "you@example.com"
-    # password = "app_password"
-    # smtp_server = "smtp.gmail.com"
-    # smtp_port = 587
     return dict(st.secrets.get("email", {}))
 
 
@@ -157,10 +154,50 @@ def send_email(subject: str, body: str, recipients: List[str]):
         server.quit()
 
 
+# -----------------------------
+# Core check routine with success/failure tracking
+# -----------------------------
+
+def perform_check(url: str, t: Dict[str, Any]) -> Tuple[Dict[str, Any], str, bool]:
+    """Return (updated_target_dict, status, changed_flag). Also updates success/fail counters."""
+    t.setdefault("success_count", 0)
+    t.setdefault("fail_count", 0)
+    t.setdefault("last_error", "")
+
+    try:
+        html = fetch(url)
+        s_info = extract_stock_info(html)
+        h = content_hash(s_info)
+        new_status = stock_status(s_info)
+
+        changed = bool(t.get("previous_hash") and h != t["previous_hash"])
+        if changed:
+            t["last_change"] = now_iso()
+            t["change_count"] = int(t.get("change_count", 0)) + 1
+            t.setdefault("log", []).append({"at": t["last_change"], "status": new_status, "event": "changed"})
+
+        t["previous_hash"] = h
+        t["last_status"] = new_status
+        t["last_checked"] = now_iso()
+        t["success_count"] = int(t.get("success_count", 0)) + 1
+        t["last_error"] = ""
+        return t, new_status, changed
+
+    except Exception as e:
+        t["last_checked"] = now_iso()
+        t["fail_count"] = int(t.get("fail_count", 0)) + 1
+        t["last_error"] = str(e)[:300]
+        t.setdefault("log", []).append({"at": t["last_checked"], "status": "ERROR", "event": "failure", "error": t["last_error"]})
+        return t, "ERROR", False
+
+
+# -----------------------------
 # UI
+# -----------------------------
+
 st.set_page_config(page_title="Stock Monitor", layout="wide")
 st.title("Website Stock Monitor")
-st.caption("Track product pages for stock-related changes. If the site uses JavaScript or strict bot protection, results may be limited.")
+st.caption("Tracks stock-related changes and counts successful and failed checks per URL.")
 
 state = load_state()
 
@@ -182,11 +219,21 @@ with st.sidebar:
             "previous_hash": t.get("previous_hash"),
             "last_change": t.get("last_change"),
             "change_count": t.get("change_count", 0),
+            "success_count": t.get("success_count", 0),
+            "fail_count": t.get("fail_count", 0),
+            "last_error": t.get("last_error", ""),
             "log": t.get("log", []),
         })
         state["targets"][url] = t
         save_state(state)
         st.success("Tracking updated")
+
+# Summary stats
+success_total = sum(int(t.get("success_count", 0)) for t in state["targets"].values())
+fail_total = sum(int(t.get("fail_count", 0)) for t in state["targets"].values())
+col_a, col_b = st.columns(2)
+col_a.metric("Total successful checks", success_total)
+col_b.metric("Total failed checks", fail_total)
 
 st.subheader("Tracked URLs")
 if not state["targets"]:
@@ -201,44 +248,73 @@ else:
             "Last Checked": t.get("last_checked", "-"),
             "Last Change": t.get("last_change", "-"),
             "Changes": int(t.get("change_count", 0)),
+            "Success": int(t.get("success_count", 0)),
+            "Fail": int(t.get("fail_count", 0)),
             "Interval (s)": int(t.get("interval_sec", 300)),
+            "Last Error": t.get("last_error", ""),
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-st.subheader("Manual Check")
+# Manual actions
+st.subheader("Actions")
+col1, col2 = st.columns(2)
 choices = list(state["targets"].keys())
-sel = st.selectbox("Pick a URL to check now", choices if choices else [""])
+sel = col1.selectbox("Pick a URL to check now", choices if choices else [""])
 
-if st.button("Check now") and sel:
+if col1.button("Check selected") and sel:
     t = state["targets"][sel]
-    try:
-        html = fetch(sel)
-        s_info = extract_stock_info(html)
-        h = content_hash(s_info)
-        new_status = stock_status(s_info)
-        changed = t.get("previous_hash") and h != t["previous_hash"]
+    t, new_status, changed = perform_check(sel, t)
+    state["targets"][sel] = t
+    save_state(state)
+    if new_status == "ERROR":
+        st.error(f"Check failed: {t.get('last_error','')}" )
+    else:
+        st.success(f"Checked. Status: {new_status}{' (changed)' if changed else ''}.")
         if changed:
-            t["last_change"] = now_iso()
-            t["change_count"] = int(t.get("change_count", 0)) + 1
             msg = f"Page changed. Status: {new_status}. URL: {sel}"
             send_email("Stock update", msg, t.get("recipients", []))
-            t.setdefault("log", []).append({"at": t["last_change"], "status": new_status})
-        t["previous_hash"] = h
-        t["last_status"] = new_status
-        t["last_checked"] = now_iso()
-        save_state(state)
-        st.success(f"Checked. Current status: {new_status}{' (changed)' if changed else ''}.")
-    except Exception as e:
-        st.error(f"Error: {e}")
+
+if col2.button("Check all now") and state["targets"]:
+    failures = 0
+    for u in list(state["targets"].keys()):
+        t = state["targets"][u]
+        t, new_status, changed = perform_check(u, t)
+        state["targets"][u] = t
+        if new_status == "ERROR":
+            failures += 1
+        elif changed:
+            msg = f"Page changed. Status: {new_status}. URL: {u}"
+            send_email("Stock update", msg, t.get("recipients", []))
+    save_state(state)
+    st.info(f"Bulk check complete. Failures: {failures}.")
+
+# Change logs
+st.subheader("Logs")
+for u, t in state["targets"].items():
+    with st.expander(u):
+        logs = t.get("log", [])
+        if not logs:
+            st.write("No events yet.")
+        else:
+            for item in reversed(logs[-100:]):
+                when = item.get("at", "-")
+                event = item.get("event", "")
+                status = item.get("status", "")
+                err = item.get("error", "")
+                if event == "failure":
+                    st.write(f"{when}  failure  {err}")
+                elif event == "changed":
+                    st.write(f"{when}  changed  status {status}")
+                else:
+                    st.write(f"{when}  {event}  {status}")
 
 st.divider()
-st.write("Notes: State is stored in /tmp and will reset on redeploys. Email settings come from Streamlit Secrets. If you need Playwright for JS-rendered sites, Community Cloud may not support installing browsers.")
+st.write("Notes: State is stored in /tmp and resets on redeploys. Email settings come from Streamlit Secrets. JavaScript-rendered sites or strict bot defenses may limit results.")
 
 
 # -----------------
 # requirements.txt
 # -----------------
-# Place this content in a separate file named requirements.txt in your repo:
 # streamlit==1.37.0
 # requests>=2.31.0
 # beautifulsoup4>=4.12.2
