@@ -26,11 +26,11 @@ USER_AGENT = (
 )
 
 # My Melody-inspired palette
-COLOR_SUCCESS = "#FF6DAF"   # candy pink
-COLOR_CHANGED = "#FFC0CB"   # light pastel pink
-COLOR_FAILURE = "#6B3E26"   # chocolate brown
-COLOR_BG_SOFT = "#FFF5F9"   # very light pink wash
-COLOR_TEXT = "#1F2937"      # neutral dark gray
+COLOR_SUCCESS = "#E60073"   # deep pink (success)
+COLOR_CHANGED = "#FF9EC4"   # medium pink (changed)
+COLOR_FAILURE = "#5B3A29"   # dark brown (failure)
+COLOR_BG_SOFT = "#FFFFFF"   # white background for contrast
+COLOR_TEXT = "#111827"      # near-black text
 
 # Shared HTTP session
 session = requests.Session()
