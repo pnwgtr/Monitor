@@ -1,6 +1,6 @@
 # streamlit_app.py
 # Streamlit Cloud app to monitor product pages for stock changes
-# Tracks successful and failed check attempts per URL.
+# Tracks successful and failed check attempts per URL and visualizes them.
 
 import json
 import time
@@ -15,12 +15,22 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+import pandas as pd
+import altair as alt
+
 DATA_PATH = "/tmp/stock_monitor_state.json"  # writable in Streamlit Cloud (ephemeral)
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+
+# My Melody-inspired palette
+COLOR_SUCCESS = "#FF6DAF"   # candy pink
+COLOR_CHANGED = "#FFC0CB"   # light pastel pink
+COLOR_FAILURE = "#6B3E26"   # chocolate brown
+COLOR_BG_SOFT = "#FFF5F9"   # very light pink wash
+COLOR_TEXT = "#1F2937"      # neutral dark gray
 
 # Shared HTTP session
 session = requests.Session()
@@ -159,7 +169,7 @@ def send_email(subject: str, body: str, recipients: List[str]):
 # -----------------------------
 
 def perform_check(url: str, t: Dict[str, Any]) -> Tuple[Dict[str, Any], str, bool]:
-    """Return (updated_target_dict, status, changed_flag). Also updates success/fail counters."""
+    """Return (updated_target_dict, status, changed_flag). Also updates success/fail counters and logs."""
     t.setdefault("success_count", 0)
     t.setdefault("fail_count", 0)
     t.setdefault("last_error", "")
@@ -174,7 +184,18 @@ def perform_check(url: str, t: Dict[str, Any]) -> Tuple[Dict[str, Any], str, boo
         if changed:
             t["last_change"] = now_iso()
             t["change_count"] = int(t.get("change_count", 0)) + 1
-            t.setdefault("log", []).append({"at": t["last_change"], "status": new_status, "event": "changed"})
+            t.setdefault("log", []).append({
+                "at": t["last_change"],
+                "status": new_status,
+                "event": "changed",
+            })
+
+        # Log a success event every check
+        t.setdefault("log", []).append({
+            "at": now_iso(),
+            "status": new_status,
+            "event": "success",
+        })
 
         t["previous_hash"] = h
         t["last_status"] = new_status
@@ -187,8 +208,63 @@ def perform_check(url: str, t: Dict[str, Any]) -> Tuple[Dict[str, Any], str, boo
         t["last_checked"] = now_iso()
         t["fail_count"] = int(t.get("fail_count", 0)) + 1
         t["last_error"] = str(e)[:300]
-        t.setdefault("log", []).append({"at": t["last_checked"], "status": "ERROR", "event": "failure", "error": t["last_error"]})
+        t.setdefault("log", []).append({
+            "at": t["last_checked"],
+            "status": "ERROR",
+            "event": "failure",
+            "error": t["last_error"],
+        })
         return t, "ERROR", False
+
+
+# -----------------------------
+# Visualization helpers
+# -----------------------------
+
+def logs_to_frame(url: str, t: Dict[str, Any]) -> pd.DataFrame:
+    """Convert per-target log list to a tidy DataFrame."""
+    rows = []
+    for item in t.get("log", []):
+        rows.append({
+            "url": url,
+            "at": item.get("at", ""),
+            "event": item.get("event", ""),
+            "status": item.get("status", ""),
+        })
+    if not rows:
+        return pd.DataFrame(columns=["url", "at", "event", "status"])
+    df = pd.DataFrame(rows)
+    df["at"] = pd.to_datetime(df["at"], errors="coerce")
+    df.dropna(subset=["at"], inplace=True)
+    df["day"] = df["at"].dt.floor("D")
+    return df
+
+
+def chart_success_failure(df: pd.DataFrame, title: str):
+    if df.empty:
+        st.info("No log data yet to chart.")
+        return
+    # Aggregate per day and event
+    agg = df.groupby(["day", "event"]).size().reset_index(name="count")
+    # Keep only relevant events
+    agg = agg[agg["event"].isin(["success", "failure", "changed"])]
+    # Map colors
+    color_scale = alt.Scale(
+        domain=["success", "changed", "failure"],
+        range=[COLOR_SUCCESS, COLOR_CHANGED, COLOR_FAILURE],
+    )
+    chart = (
+        alt.Chart(agg)
+        .mark_bar()
+        .encode(
+            x=alt.X("day:T", title="Date"),
+            y=alt.Y("count:Q", title="Events"),
+            color=alt.Color("event:N", scale=color_scale, title="Event"),
+            tooltip=["day:T", "event:N", "count:Q"],
+        )
+        .properties(height=220, title=title)
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 # -----------------------------
@@ -196,6 +272,30 @@ def perform_check(url: str, t: Dict[str, Any]) -> Tuple[Dict[str, Any], str, boo
 # -----------------------------
 
 st.set_page_config(page_title="Stock Monitor", layout="wide")
+
+# Minimal theming via CSS injection
+st.markdown(
+    f"""
+    <style>
+    :root {{
+        --mm-success: {COLOR_SUCCESS};
+        --mm-changed: {COLOR_CHANGED};
+        --mm-failure: {COLOR_FAILURE};
+        --mm-bg: {COLOR_BG_SOFT};
+        --mm-text: {COLOR_TEXT};
+    }}
+    .stApp {{ background: var(--mm-bg); color: var(--mm-text); }}
+    .stButton>button {{
+        background: var(--mm-success) !important; color: white !important;
+        border: 0; border-radius: 6px;
+    }}
+    .stButton>button:hover {{ filter: brightness(0.95); }}
+    .st-emotion-cache-1wmy9hl, .st-emotion-cache-16idsys {{ color: var(--mm-text) !important; }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 st.title("Website Stock Monitor")
 st.caption("Tracks stock-related changes and counts successful and failed checks per URL.")
 
@@ -235,11 +335,19 @@ col_a, col_b = st.columns(2)
 col_a.metric("Total successful checks", success_total)
 col_b.metric("Total failed checks", fail_total)
 
+# Combined chart across all URLs
+all_logs = []
+for u, t in state["targets"].items():
+    dfu = logs_to_frame(u, t)
+    if not dfu.empty:
+        all_logs.append(dfu)
+if all_logs:
+    chart_success_failure(pd.concat(all_logs, ignore_index=True), "All URLs — events per day")
+
 st.subheader("Tracked URLs")
 if not state["targets"]:
     st.info("No URLs tracked yet. Add one in the sidebar.")
 else:
-    import pandas as pd
     rows = []
     for u, t in state["targets"].items():
         rows.append({
@@ -288,25 +396,16 @@ if col2.button("Check all now") and state["targets"]:
     save_state(state)
     st.info(f"Bulk check complete. Failures: {failures}.")
 
-# Change logs
-st.subheader("Logs")
+# Per-URL logs and charts
+st.subheader("Logs and charts")
 for u, t in state["targets"].items():
     with st.expander(u):
-        logs = t.get("log", [])
-        if not logs:
+        df = logs_to_frame(u, t)
+        if df.empty:
             st.write("No events yet.")
         else:
-            for item in reversed(logs[-100:]):
-                when = item.get("at", "-")
-                event = item.get("event", "")
-                status = item.get("status", "")
-                err = item.get("error", "")
-                if event == "failure":
-                    st.write(f"{when}  failure  {err}")
-                elif event == "changed":
-                    st.write(f"{when}  changed  status {status}")
-                else:
-                    st.write(f"{when}  {event}  {status}")
+            chart_success_failure(df, f"{u} — events per day")
+            st.dataframe(df.sort_values("at", ascending=False), use_container_width=True)
 
 st.divider()
 st.write("Notes: State is stored in /tmp and resets on redeploys. Email settings come from Streamlit Secrets. JavaScript-rendered sites or strict bot defenses may limit results.")
@@ -318,3 +417,5 @@ st.write("Notes: State is stored in /tmp and resets on redeploys. Email settings
 # streamlit==1.37.0
 # requests>=2.31.0
 # beautifulsoup4>=4.12.2
+# pandas>=2.0.0
+# altair>=5.0.0
